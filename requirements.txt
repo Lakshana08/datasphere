@@ -1,1 +1,7 @@
 requests
+fastapi
+uvicorn
+langchain
+sap-ai-sdk-gen[all]
+a2a-sdk
+sse-starlette

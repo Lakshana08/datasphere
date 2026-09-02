@@ -215,14 +215,28 @@ def fetch_rows(resolved: dict, path: str, query: str) -> requests.Response:
 
 
 # --------------------------------------------------------------------------- #
-# main
+# reusable entry point (used by both the CLI below and app.py)
 # --------------------------------------------------------------------------- #
-def main() -> int:
-    _load_dotenv()
+def run_fetch(
+    name: Optional[str] = None,
+    data_path: Optional[str] = None,
+    data_query: Optional[str] = None,
+) -> dict:
+    """
+    Resolve `name` through the destination service (or direct OAuth fallback)
+    and GET data_path?data_query from the resolved target.
 
-    name = os.environ.get("DESTINATION_NAME", "Datasphere_Joule")
-    data_path = os.environ.get("DATA_PATH", "")
-    data_query = os.environ.get("DATA_QUERY", "")
+    Any argument left as None falls back to the matching env var
+    (DESTINATION_NAME / DATA_PATH / DATA_QUERY), same defaults the CLI uses.
+
+    Returns a dict describing what happened -- never prints, never raises for
+    an HTTP-level failure (that's reported via ok/status_code so callers, e.g.
+    a FastAPI route, can turn it into the right response).  Raises RuntimeError
+    for setup failures (bad/missing binding, bad destination credentials, ...).
+    """
+    name = name or os.environ.get("DESTINATION_NAME", "Datasphere_Joule")
+    data_path = os.environ.get("DATA_PATH", "") if data_path is None else data_path
+    data_query = os.environ.get("DATA_QUERY", "") if data_query is None else data_query
 
     # mode: "service" -> go through the Destination service REST API
     #       "direct"  -> replicate the destination's OAuth locally (no binding)
@@ -240,40 +254,66 @@ def main() -> int:
         binding = None
 
     if binding is not None:
-        print(f"[1/4] destination-service api : {binding['api_uri']}")
+        fetch_mode = "service"
         svc_token = get_service_token(binding)
-        print(f"[2/4] xsuaa token            : ok ({len(svc_token)} chars)")
         resolved = resolve_destination(binding, svc_token, name)
     else:
-        print("[1/4] mode                   : direct (no destination-service binding)")
+        fetch_mode = "direct"
         resolved = direct_resolve(name)
-        print(f"[2/4] token service          : ok")
 
     cfg = resolved.get("destinationConfiguration", {})
-    print(f"[3/4] destination '{name}'    : resolved")
-    print(f"       target URL            : {cfg.get('URL')}")
-    print(f"       auth type             : {cfg.get('Authentication')}")
-    print(f"       pre-fetched token     : {bool(resolved.get('authTokens'))}")
-
     resp = fetch_rows(resolved, data_path, data_query)
-    print(f"[4/4] GET {resp.url}")
-    print(f"       http status           : {resp.status_code}")
 
-    ok = resp.ok
+    body_json = None
+    body_text = None
     ctype = resp.headers.get("content-type", "")
     if "json" in ctype:
         try:
-            body = resp.json()
-            print("       response (json):")
-            print(json.dumps(body, indent=2)[:2000])
+            body_json = resp.json()
         except ValueError:
-            print("       response (text):")
-            print(resp.text[:2000])
+            body_text = resp.text
     else:
+        body_text = resp.text
+
+    return {
+        "fetch_mode": fetch_mode,
+        "destination_name": name,
+        "target_url": cfg.get("URL"),
+        "auth_type": cfg.get("Authentication"),
+        "prefetched_token": bool(resolved.get("authTokens")),
+        "request_url": resp.url,
+        "status_code": resp.status_code,
+        "ok": resp.ok,
+        "data": body_json,
+        "text": body_text,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# CLI (unchanged diagnostic behaviour, now built on run_fetch)
+# --------------------------------------------------------------------------- #
+def main() -> int:
+    _load_dotenv()
+
+    result = run_fetch()
+
+    print(f"[1/4] fetch mode              : {result['fetch_mode']}")
+    print(f"[2/4] destination '{result['destination_name']}'    : resolved")
+    print(f"       target URL            : {result['target_url']}")
+    print(f"       auth type             : {result['auth_type']}")
+    print(f"       pre-fetched token     : {result['prefetched_token']}")
+    print(f"[3/4] GET {result['request_url']}")
+    print(f"       http status           : {result['status_code']}")
+
+    if result["data"] is not None:
+        print("       response (json):")
+        print(json.dumps(result["data"], indent=2)[:2000])
+    elif result["text"] is not None:
         print("       response (text):")
-        print(resp.text[:2000])
+        print(result["text"][:2000])
 
     print()
+    ok = result["ok"]
     print("RESULT:", "CAN fetch data ✓" if ok else "CANNOT fetch data ✗")
     return 0 if ok else 1
 

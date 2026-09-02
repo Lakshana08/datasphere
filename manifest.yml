@@ -1,24 +1,27 @@
 ---
 applications:
   - name: datasphere-fetch
-    memory: 128M
-    disk_quota: 1G
+    memory: 1G
+    disk_quota: 2G
     instances: 1
-    no-route: true
-    health-check-type: process
+    health-check-type: http
+    health-check-http-endpoint: /health
     buildpacks:
       - python_buildpack
 
-    # One-shot diagnostic script: it runs, prints the result, and exits. See the
-    # output with:  cf logs datasphere-fetch --recent
-    # (With health-check-type: process CF will re-run it on each exit; scale to 0
-    #  or `cf stop datasphere-fetch` once you've seen the result.)
-    command: python fetch_data.py
+    # Persistent FastAPI service (app.py) exposing GET /fetch, and the agent
+    # as an A2A server at /a2a/* -- so this can be called as a Joule pro-code
+    # agent tool, or delegated to as a remote A2A agent (send questions via
+    # A2A's SendMessage method, not a REST endpoint). $PORT is injected by
+    # Cloud Foundry. See output with:
+    #   cf logs datasphere-fetch --recent
+    command: uvicorn app:app --host 0.0.0.0 --port $PORT
 
     # Bind the destination-service instance that lives in THIS space/subaccount
     # (the one whose service key you pasted into .env). With this bound, the
-    # script reads the binding from VCAP_SERVICES and needs no DEST_SVC_* vars.
-    # Replace with the real instance name (cf services).
+    # app reads the binding from VCAP_SERVICES and needs no DEST_SVC_* vars.
+    # (AI Core credentials are set directly via AICORE_* env vars below
+    # instead of a service binding -- see the note there.)
     services:
       - Destination
 
@@ -30,3 +33,22 @@ applications:
       DESTINATION_NAME: Datasphere_Joule
       DATA_PATH: "api/v1/dwc/consumption/relational/ASSESSMENT/GV_CV_MASTER_OBJECT_USAGE/GV_CV_MASTER_OBJECT_USAGE"
       DATA_QUERY: "$top=10"
+      # Optional: require `X-API-Key: <value>` on GET /fetch. Unset = open
+      # (fine for a quick POC, tighten before wider exposure). Note this
+      # does NOT cover /a2a -- those routes come from a2a-sdk's own router,
+      # not our FastAPI handlers, so they're unauthenticated regardless.
+      # API_KEY: set-me-via-cf-set-env
+
+      # SAP AI Core config for /a2a (agent.py's LLM).
+      AICORE_AUTH_URL: https://gen-ai.authentication.us10.hana.ondemand.com/oauth/token
+      AICORE_CLIENT_ID: sb-42a29a03-b2f4-47de-9a41-e0936be9aaf5!b256749|aicore!b164
+      AICORE_CLIENT_SECRET: b5e6caee-15aa-493a-a6ac-1fef0ab6e9fe$Satg7UGYPLsz5YYeXefHpbwTfEqqCkQEbasMDPGHAgU=
+      AICORE_BASE_URL: https://api.ai.prod.us-east-1.aws.ml.hana.ondemand.com/v2
+      AICORE_RESOURCE_GROUP: default
+      LLM_DEPLOYMENT_ID: d38dd2015862a15d
+
+      # Optional: the public URL this app is reachable at, used to build the
+      # A2A AgentCard's endpoint URL. If unset, falls back to Cloud Foundry's
+      # own VCAP_APPLICATION route (usually correct -- override only if
+      # fronted by a different public hostname, e.g. an API gateway).
+      # PUBLIC_BASE_URL: https://datasphere-fetch.<your-cf-domain>
