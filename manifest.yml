@@ -1,0 +1,32 @@
+---
+applications:
+  - name: datasphere-fetch
+    memory: 128M
+    disk_quota: 1G
+    instances: 1
+    no-route: true
+    health-check-type: process
+    buildpacks:
+      - python_buildpack
+
+    # One-shot diagnostic script: it runs, prints the result, and exits. See the
+    # output with:  cf logs datasphere-fetch --recent
+    # (With health-check-type: process CF will re-run it on each exit; scale to 0
+    #  or `cf stop datasphere-fetch` once you've seen the result.)
+    command: python fetch_data.py
+
+    # Bind the destination-service instance that lives in THIS space/subaccount
+    # (the one whose service key you pasted into .env). With this bound, the
+    # script reads the binding from VCAP_SERVICES and needs no DEST_SVC_* vars.
+    # Replace with the real instance name (cf services).
+    services:
+      - Destination
+
+    env:
+      # service : go through the bound destination-service instance (uses VCAP_SERVICES)
+      # direct  : do the OAuth locally (then also set the DEST_CLIENT_* / TARGET_URL
+      #           vars below via `cf set-env`, and drop the `services:` binding)
+      FETCH_MODE: service
+      DESTINATION_NAME: Datasphere_Joule
+      DATA_PATH: "api/v1/dwc/consumption/relational/ASSESSMENT/GV_CV_MASTER_OBJECT_USAGE/GV_CV_MASTER_OBJECT_USAGE"
+      DATA_QUERY: "$top=10"

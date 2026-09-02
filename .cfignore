@@ -1,0 +1,11 @@
+.env
+Datasphere_Joule
+deploy.sh
+.venv/
+venv/
+__pycache__/
+*.pyc
+scratchpad/
+.git/
+.idea/
+.vscode/
