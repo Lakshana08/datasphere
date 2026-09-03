@@ -6,6 +6,7 @@ venv/
 __pycache__/
 *.pyc
 scratchpad/
+datasphere_fetch_capability/
 .git/
 .idea/
 .vscode/

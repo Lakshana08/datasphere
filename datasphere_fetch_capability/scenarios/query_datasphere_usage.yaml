@@ -1,0 +1,18 @@
+description: >-
+  Answers questions about SAP Datasphere / BW object-usage data (one row
+  per object; columns CUSTOMER_NAME, OBJECT_TYPE, OBJECT_NAME,
+  LAST_USED_DATE, LAST_USED_TIME, LAST_UNUSED_MONTHS). Use it for any
+  slice, count, ranking or lookup over this data: which objects have or
+  haven't been used recently, when an object was last used, the most or
+  least recently used object (overall or per customer/tenant), objects
+  unused for more than N months, which customers or tenants appear in the
+  data ("list the customers", "list the tenants", "which customers are
+  available"), and how many objects each customer has. Example phrasings:
+  "which objects haven't been used in over a year?", "most recently used
+  object for CITGO?", "when was ZFIBPC_Q0001 last used?", "list the
+  customers in the Datasphere usage data", "list available tenants", "how
+  many objects per customer?", "top 10 longest-unused objects".
+
+target:
+  type: function
+  name: querydatasphereusage

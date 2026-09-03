@@ -1,0 +1,24 @@
+# Delegates the user's question to the remote Datasphere Fetch A2A agent
+# (system alias DATASPHERE_FETCH) and shows its answer.
+#
+# No contextId/taskId threading: the agent keeps no per-conversation state,
+# so every turn is independent. Re-sending a prior taskId makes the A2A
+# server reject the call ("Task ... is in terminal state"), which broke
+# every turn after the first.
+action_groups:
+  - actions:
+      - type: status-update
+        message: <? "Fetching Datasphere data and answering..." ?>
+
+      - type: agent-request
+        agent_type: remote                 # remote = code-based (BYO) agent
+        system_alias: DATASPHERE_FETCH
+        result_variable: result
+
+      # The agent emits one already-completed A2A Task whose status.message
+      # holds the full answer text.
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? result.body.status.message.parts[0].text ?>"

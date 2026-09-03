@@ -32,7 +32,9 @@ applications:
       FETCH_MODE: service
       DESTINATION_NAME: Datasphere_Joule
       DATA_PATH: "api/v1/dwc/consumption/relational/ASSESSMENT/GV_CV_MASTER_OBJECT_USAGE/GV_CV_MASTER_OBJECT_USAGE"
-      DATA_QUERY: "$top=10"
+      # Fallback only, used by GET /fetch and by the agent when it passes no
+      # odata_query. The agent normally sends its own $filter/$top/$orderby.
+      DATA_QUERY: "$top=1000&$count=true"
       # Optional: require `X-API-Key: <value>` on GET /fetch. Unset = open
       # (fine for a quick POC, tighten before wider exposure). Note this
       # does NOT cover /a2a -- those routes come from a2a-sdk's own router,

@@ -71,15 +71,21 @@ _configure_ai_core_env()
 DATA_SOURCES: dict[str, dict[str, Optional[str]]] = {
     "object_usage": {
         "description": (
-            "Datasphere/BW object usage: which objects (DTPs, views, ...) were "
-            "last used, when, and for which customer/tenant."
+            "Datasphere/BW object usage. One row per object. Columns: "
+            "CUSTOMER_NAME (str), OBJECT_TYPE (str, e.g. 'QUERY'), "
+            "OBJECT_NAME (str, trailing-space padded), LAST_USED_DATE "
+            "('YYYY-MM-DD'), LAST_USED_TIME ('HH:MM:SS'), "
+            "LAST_UNUSED_MONTHS (int -- whole months since last use)."
         ),
         "destination_name": os.environ.get("DESTINATION_NAME", "Datasphere_Joule"),
         "data_path": os.environ.get(
             "DATA_PATH",
             "api/v1/dwc/consumption/relational/ASSESSMENT/GV_CV_MASTER_OBJECT_USAGE/GV_CV_MASTER_OBJECT_USAGE",
         ),
-        "data_query": os.environ.get("DATA_QUERY", "$top=10"),
+        # Fallback query when the caller passes no odata_query. Not a hard
+        # limit -- the model can override $top (and add $filter/$orderby/
+        # $apply/$select/$count) per question.
+        "data_query": os.environ.get("DATA_QUERY", "$top=1000&$count=true"),
     },
     # "another_path": {
     #     "description": "...",
@@ -100,36 +106,110 @@ def list_data_sources() -> str:
     return "\n".join(f"- {name}: {cfg['description']}" for name, cfg in DATA_SOURCES.items())
 
 
-@tool
-def fetch_dataset(source: str) -> str:
-    """Fetch the current rows for a named Datasphere data source.
+_RESULT_CHAR_CAP = 120000
 
-    Call list_data_sources first if you don't already know the valid names.
+
+def _encode_odata_query(query: str) -> str:
+    """Percent-encode the *values* in an OData query string so a $filter
+    with spaces/quotes survives being pasted straight into the URL (fetch
+    builds `url + '?' + query` verbatim). Keys like '$filter' are kept
+    literal; only the part after each '=' is encoded."""
+    from urllib.parse import quote
+
+    parts = []
+    for clause in query.lstrip("?").split("&"):
+        if not clause:
+            continue
+        key, sep, value = clause.partition("=")
+        parts.append(f"{key}={quote(value, safe='')}" if sep else key)
+    return "&".join(parts)
+
+
+@tool
+def fetch_dataset(source: str, odata_query: Optional[str] = None) -> str:
+    """Fetch rows for a named Datasphere data source, optionally filtered.
+
+    Call list_data_sources first if you don't already know the valid names
+    (its description lists each source's columns).
+
+    Prefer pushing the work into `odata_query` instead of pulling everything
+    and reasoning over it -- the result is capped at ~30k characters, so an
+    unfiltered pull of a large table only shows an arbitrary slice.
 
     Args:
         source: the data source key, e.g. "object_usage".
+        odata_query: OData v4 system query options, '&'-joined, no leading
+            '?'. Use real column names. Guidance:
+              - Always add "$count=true" so the true total comes back even
+                when the row list is capped.
+              - Add "$select=col,col" with only the columns the answer
+                needs -- far more rows then fit under the size cap.
+              - Use a high "$top" (e.g. 5000) when the user wants "all" of
+                something; "$apply=groupby(...)" for counts/totals.
+            Examples:
+              "$filter=contains(CUSTOMER_NAME,'CITGO')&$select=OBJECT_NAME,LAST_USED_DATE&$count=true&$top=5000"
+              "$filter=LAST_UNUSED_MONTHS gt 12&$orderby=LAST_UNUSED_MONTHS desc&$count=true&$top=5000"
+              "$apply=groupby((CUSTOMER_NAME),aggregate($count as n))"
+            Omit to use the source's default ($top=1000&$count=true).
     """
     cfg = DATA_SOURCES.get(source)
     if cfg is None:
         return f"Unknown source '{source}'. Valid sources: {', '.join(DATA_SOURCES)}"
 
+    query = _encode_odata_query(odata_query) if odata_query else cfg["data_query"]
+
     try:
         result = fetch_data.run_fetch(
             name=cfg["destination_name"],
             data_path=cfg["data_path"],
-            data_query=cfg["data_query"],
+            data_query=query,
         )
     except Exception as exc:  # noqa: BLE001 - surface as tool output, not a crash
         return f"Error fetching '{source}': {exc}"
 
     if not result["ok"]:
         body = result["data"] if result["data"] is not None else result["text"]
-        return f"Fetch for '{source}' failed (HTTP {result['status_code']}): {body}"
+        return (
+            f"Fetch for '{source}' failed (HTTP {result['status_code']}) "
+            f"for query {query!r}: {body}"
+        )
 
     payload = result["data"] if result["data"] is not None else result["text"]
+    total = payload.get("@odata.count") if isinstance(payload, dict) else None
     rows = payload.get("value", payload) if isinstance(payload, dict) else payload
-    # Cap so one fetch can't blow the model's context.
-    return json.dumps(rows, indent=2)[:8000]
+
+    if not isinstance(rows, list):
+        return json.dumps(rows, indent=2)[:_RESULT_CHAR_CAP]
+
+    # Trim row-by-row so the JSON stays valid and we can say exactly how
+    # many of the matching rows are shown.
+    kept, size = [], 0
+    for row in rows:
+        chunk = json.dumps(row, indent=2)
+        if size + len(chunk) > _RESULT_CHAR_CAP:
+            break
+        kept.append(row)
+        size += len(chunk) + 2
+
+    returned = len(rows)
+    shown = len(kept)
+    matched = total if total is not None else returned
+
+    if shown >= matched:
+        head = f"{matched} rows match" if total is not None else f"{shown} rows"
+        header = f"{head}; all shown."
+    else:
+        reasons = []
+        if returned < matched:
+            reasons.append("$top limit")
+        if shown < returned:
+            reasons.append("size cap")
+        header = (
+            f"{matched} rows match; showing {shown} ({', '.join(reasons)}). "
+            f"Raise $top, add $select to drop columns, $filter to narrow, or "
+            f"$apply=groupby(...) for a count/aggregate if you need them all."
+        )
+    return f"{header}\n{json.dumps(kept, indent=2)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -137,8 +217,21 @@ def fetch_dataset(source: str) -> str:
 # --------------------------------------------------------------------------- #
 SYSTEM_PROMPT = (
     "You answer questions about SAP Datasphere usage data. Use list_data_sources "
-    "to see what's available, then fetch_dataset to pull the rows you need before "
-    "answering. Base your answer only on the fetched data -- if it doesn't "
+    "to see what's available and what columns each source has, then fetch_dataset "
+    "to pull the rows you need before answering.\n"
+    "Do the filtering, sorting and counting in the fetch itself via the "
+    "odata_query argument ($filter, $orderby, $top, $select, $count, $apply) "
+    "using the real column names -- don't pull everything and sift through it. "
+    "Always include $count=true. Add $select with only the columns the answer "
+    "needs, and a high $top (e.g. 5000) when the user wants every matching "
+    "row; use $apply=groupby(...) for pure counts/totals. Match text loosely "
+    "(contains(...), not eq) unless the user gave an exact value; e.g. a "
+    "question about 'CITGO' should filter contains(CUSTOMER_NAME,'CITGO'). If "
+    "a fetch returns an HTTP error, read it, fix the query, and retry once.\n"
+    "The tool tells you how many rows match and how many it actually shows. "
+    "If it shows fewer than match, state the true total, give the rows you "
+    "have, and offer to narrow further -- never imply the list is complete "
+    "when it isn't. Base your answer only on the fetched data; if it doesn't "
     "contain the answer, say so instead of guessing."
 )
 

@@ -21,6 +21,7 @@ fine for a quick POC, but set API_KEY before wider exposure.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Optional
@@ -32,6 +33,62 @@ import fetch_data
 fetch_data._load_dotenv()  # no-op on Cloud Foundry; picks up local .env
 
 logger = logging.getLogger(__name__)
+
+
+class _StripInboundTaskId:
+    """ASGI middleware: drop any client-supplied taskId from A2A requests.
+
+    Joule threads the previous turn's taskId back into every agent-request.
+    This a2a-sdk rejects a re-sent taskId once that task is terminal
+    ("Task ... is in terminal state: 3"), so every Joule turn after the
+    first would fail. The agent keeps no per-conversation state, so each
+    call is independent anyway -- strip params.taskId and
+    params.message.taskId and let the server mint a fresh task. contextId
+    is left intact for task grouping.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or not scope.get("path", "").startswith("/a2a")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        body = b""
+        while True:
+            message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body"):
+                break
+
+        try:
+            payload = json.loads(body)
+            params = payload.get("params")
+            if isinstance(params, dict):
+                changed = params.pop("taskId", None) is not None
+                message_obj = params.get("message")
+                if isinstance(message_obj, dict):
+                    changed = message_obj.pop("taskId", None) is not None or changed
+                if changed:
+                    body = json.dumps(payload).encode("utf-8")
+        except (ValueError, AttributeError):
+            pass  # not JSON we recognise -- forward unchanged
+
+        consumed = False
+
+        async def _receive():
+            nonlocal consumed
+            if consumed:
+                return {"type": "http.disconnect"}
+            consumed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, _receive, send)
 
 app = FastAPI(
     title="Datasphere Fetch",
@@ -46,7 +103,14 @@ app = FastAPI(
 try:
     import a2a_server
 
-    app.mount("/a2a", a2a_server.build_a2a_app(a2a_server.PUBLIC_BASE_URL))
+    _a2a_app = a2a_server.build_a2a_app(a2a_server.PUBLIC_BASE_URL)
+    # Answer a bare POST /a2a (no trailing slash) directly. Registered
+    # BEFORE the mount so Starlette matches it first -- otherwise the
+    # Mount catches /a2a and 307-redirects to /a2a/, which Joule's POST
+    # client doesn't follow.
+    app.router.routes.append(a2a_server.bare_rpc_route("/a2a"))
+    app.mount("/a2a", _a2a_app)
+    app.add_middleware(_StripInboundTaskId)
 except Exception:  # noqa: BLE001 - keep /fetch and /ask alive even if A2A wiring breaks
     logger.exception("A2A mount failed -- /a2a will be unavailable, other endpoints still work")
 

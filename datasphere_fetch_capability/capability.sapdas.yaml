@@ -1,0 +1,20 @@
+# schema_version 3.28.0 is the minimum DTA version with A2A agent-request
+# support -- do not lower it.
+schema_version: 3.28.0
+
+metadata:
+  namespace: joule.ext        # joule.ext is the only namespace allowed without special permissions
+  name: datasphere_fetch_a2a
+  version: 1.0.2
+  display_name: "Datasphere Fetch"
+  description: >-
+    Answers natural-language questions about SAP Datasphere / BW object
+    usage data (which objects were last used, when, and for which
+    customer/tenant) by fetching live rows through the BTP Destination
+    service and reasoning over them, via a remote A2A agent.
+
+system_aliases:
+  # Alias key is referenced by functions/*.yaml; the destination value is
+  # the BTP destination that points at <app>/a2a.
+  DATASPHERE_FETCH:
+    destination: DATASPHERE_FETCH

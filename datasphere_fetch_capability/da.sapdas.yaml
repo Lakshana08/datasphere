@@ -1,0 +1,6 @@
+schema_version: 1.4.0
+name: datasphere_fetch_a2a
+capabilities:
+  - type: local
+    name: datasphere_fetch_a2a
+    folder: ./
